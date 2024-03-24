@@ -2,7 +2,7 @@
 
 This project is an updated version of my Everything Controller I did a while back. This time I focused on transmission time, using the powerfull Teensy 3.2 as the main microcontroller. I also added more inputs, so I have even more functions to help the control of various projects, and not only robots.
 
-![Finished project](https://github.com/Nabinho/Everything-Controller-V2.0/blob/main/Photos/front_min.jpg =349x465 "Finished project")
+![Finished project](https://github.com/Nabinho/Everything-Controller-V2.0/blob/main/Photos/front_min.jpg "Finished project")
 
 The PCB and base code of this project are available for replication. The Teensy 3.2 is discontinued, so if you don't have one, maybe this can be a great reference for your own project.
 
