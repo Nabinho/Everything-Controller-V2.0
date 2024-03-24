@@ -1,0 +1,8 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "AP65552")(type "Legacy")(uri "${KIPRJMOD}/symbol/AP65552.lib")(options "")(descr ""))
+  (lib (name "TPS564201")(type "Legacy")(uri "${KIPRJMOD}/symbol/TPS564201.lib")(options "")(descr ""))
+  (lib (name "Teensy")(type "Legacy")(uri "${KIPRJMOD}/symbol/teensy.lib")(options "")(descr ""))
+  (lib (name "Joystick")(type "KiCad")(uri "${KIPRJMOD}/symbol/Joystick.kicad_sym")(options "")(descr ""))
+  (lib (name "IRF7424")(type "Legacy")(uri "${KIPRJMOD}/symbol/IRF7424.lib")(options "")(descr ""))
+)
