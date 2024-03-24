@@ -2,7 +2,7 @@
 
 This project is an updated version of my Everything Controller I did a while back. This time I focused on transmission time, using the powerfull Teensy 3.2 as the main microcontroller. I also added more inputs, so I have even more functions to help the control of various projects, and not only robots.
 
-![Finished project](https://github.com/Nabinho/Everything-Controller-V2.0/blob/main/Photos/front.jpg "Finished project")
+![Finished project](https://github.com/Nabinho/Everything-Controller-V2.0/blob/main/Photos/front_min.jpg =349x465 "Finished project")
 
 The PCB and base code of this project are available for replication. The Teensy 3.2 is discontinued, so if you don't have one, maybe this can be a great reference for your own project.
 
@@ -18,7 +18,7 @@ The SMD components list can be found in the interactive BOM generated with the K
 * 4x - [Cherry MX Switches (any color)](https://pt.aliexpress.com/item/1005006255961111.html?spm=a2g0o.cart.0.0.360c7f06wTXtF8&mp=1&gatewayAdapt=glo2bra);
 * 2x - [PS5 Hall Effect Joystick](https://pt.aliexpress.com/item/1005006165745072.html?spm=a2g0o.order_list.order_list_main.58.3876caa4MgzPN5&gatewayAdapt=glo2bra);
 
-Besides the electronics componentes, a pair of 18650 Li-Ion batteries is necessary to power the controller.
+Besides the electronics components, a pair of 18650 Li-Ion batteries is necessary to power the controller.
 
 Some screws and nuts ares also recommended to mount the soldered PCB in an acrylic or 3D printed backplate.
 
@@ -35,4 +35,4 @@ As soon as the controller was finished I ran some benchmark tests to validate th
 
 ### Conclusion/Contact
 
-As this is a personal project, I would love to see if anyone replicate or takes inspiration from this project. So if you replicate or use this as a base for your owm project, please share it with me in Instagram.
+As this is a personal project, I would love to see if anyone replicate or takes inspiration from this project. So if you replicate or use this as a base for your own project, please share it with me in Instagram.
