@@ -14,9 +14,6 @@
 // Arduino framework
 #include <Arduino.h>
 
-// Redefinition from RF24 library for faster communication
-#define RF24_SPI_SPEED 16000000
-
 // NRF24L01 control libraries
 #include <SPI.h>
 #include <RF24.h>
@@ -24,6 +21,7 @@
 // SSD1327 control libraries
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1327.h>
+#include "icons.h"
 
 // Teensy ADC libraries
 #include <ADC.h>
@@ -31,11 +29,17 @@
 
 // Encoder library
 #include <Encoder.h>
+
+// Button library
 #include <Bounce2.h>
 
 // ********************** Project Macros **********************
 // Macro to disable or enable serial debugging
-// #define DEBUG
+// #define DEBUG_BATTERY
+// #define DEBUG_ANALOG
+// #define DEBUG_DIGITAL
+#define DEBUG_ENCODER
+// #define DEBUG_GENERIC // used to debug logic without the controller readings
 
 // Controller pins definitions (Analog Inputs)
 #define PIN_JXAL A6	 // Joystick X Axis Left
@@ -67,7 +71,7 @@
 
 // Controller pins definitions (LEDs Outputs)
 #define PIN_LED1 25 // RF Message Feedback LED
-#define PIN_LED2 32 // Battery Level Feedback LED
+#define PIN_LED2 32 // Battery Level Feedback LED | Vibracall Motor
 
 // NRF24L01 pins definitions
 #define PIN_CE 9
@@ -81,18 +85,32 @@
 
 // ********************** Project Objects *********************
 // Controller encoder objects
-Encoder knob_left(PIN_ECLKL, PIN_EDTL);
-Encoder knob_right(PIN_ECLKR, PIN_EDTR);
+const uint8_t NUMBER_KNOBS = 2;
+Encoder KNBOS[NUMBER_KNOBS] = {
+	Encoder(PIN_ECLKL, PIN_EDTL),
+	Encoder(PIN_ECLKR, PIN_EDTR)};
 
 // Controller buttons objects
-Bounce bounce_MXCL = Bounce();
-Bounce bounce_MXEL = Bounce();
-Bounce bounce_MXER = Bounce();
-Bounce bounce_MXCR = Bounce();
-Bounce bounce_EBL = Bounce();
-Bounce bounce_EBR = Bounce();
-Bounce bounce_JBL = Bounce();
-Bounce bounce_JBR = Bounce();
+const uint8_t NUMBER_BUTTONS = 8;
+const uint8_t DEBOUNCE_INTERVAL = 50;
+Bounce BUTTONS[NUMBER_BUTTONS];
+const uint8_t PINS_BUTTONS[NUMBER_BUTTONS] = {PIN_JBTL, PIN_JBTR, PIN_EBTL, PIN_EBTR, PIN_MXBTEL, PIN_MXBTCL, PIN_MXBTCR, PIN_MXBTER};
+bool buttons_readings[NUMBER_BUTTONS];
+bool MXbuttons_states[NUMBER_BUTTONS / 2] = {false, false, false, false};
+
+// MX SW Latch Switches Pins
+const uint8_t DIP_PINS[NUMBER_BUTTONS / 2] = {PIN_DIPEL, PIN_DIPCL, PIN_DIPCR, PIN_DIPER};
+bool MX_latch[NUMBER_BUTTONS / 2];
+bool latch_change[NUMBER_BUTTONS / 2] = {true, true, true, true};
+
+// Analog Pins
+const uint8_t NUMBER_ANALOG_INS = 8;
+const uint8_t ANALOG_PINS[NUMBER_ANALOG_INS] = {PIN_JXAL, PIN_JYAL, PIN_JXAR, PIN_JYAR, PIN_RPOTL, PIN_RPOTR, PIN_SPOTL, PIN_SPOTR};
+uint16_t analog_readings[NUMBER_ANALOG_INS];
+
+// LEDs Pins
+const uint8_t NUMBER_LEDS = 2;
+const uint8_t LED_PINS[NUMBER_LEDS] = {PIN_LED1, PIN_LED2};
 
 // NRF24L01 control object
 RF24 radio(PIN_CE, PIN_CSN);
@@ -112,149 +130,70 @@ const bool radio_NUMBER = 0;
 // Variables for failsafe and display update
 bool message_acknowledged;
 bool last_acknowledgement;
+bool vibration_animation = true;
+uint8_t vibration_PWM = 250;
+bool signal_state = false;
+
+// Encoders reading variables
+int16_t new_positions[NUMBER_KNOBS] = {0, 0};
+int16_t last_positions[NUMBER_KNOBS] = {0, 0};
+
+// Variables for radio timings
+unsigned long last_message = 0;
+const uint8_t TX_INTERVAL = 2; // [ms] | 1 ms to acknowlegement (6 ms total)
+unsigned long last_message_sent = 0;
+const uint16_t TX_TIMEOUT = 2500; // [ms] | FAILSAFE
+
+// Battery Voltage Divider Variables
+const uint8_t BATTERY_PIN = A14;
+float VD_VOUT = 0.0;
+float VD_VIN = 0.0;
+float last_VD_VIN = 0.0;
+const float VD_R1 = 51000.0;
+const float VD_R2 = 33000.0;
+const float MIN_VIN = 6.5;
+const float HYSTERESIS = 0.1;
+unsigned long last_battery = 5000;
+const uint16_t BATTERY_READING = 5000; // [ms]
+uint8_t battery_icon = 4;
+uint8_t last_battery_icon = 0;
+
+// Boolean to update OLED Display
+bool update_display = true;
 
 // Controller variables structure
 typedef struct
 {
-	bool buttonMCL_reading = true;
-	bool buttonMEL_reading = true;
-	bool buttonMER_reading = true;
-	bool buttonMCR_reading = true;
-	bool buttonEL_reading = true;
-	bool buttonER_reading = true;
-	bool buttonJL_reading = true;
-	bool buttonJR_reading = true;
-	uint16_t XLaxis_reading = 0;
-	uint16_t YLaxis_reading = 0;
-	uint16_t XRaxis_reading = 0;
-	uint16_t YRaxis_reading = 0;
-	uint16_t sliderL_reading = 0;
-	uint16_t sliderR_reading = 0;
-	uint16_t rotaryL_reading = 0;
-	uint16_t rotaryR_reading = 0;
-	int8_t encoderL_reading = 0;
-	int8_t encoderR_reading = 0;
+	bool buttons_message[8];
+	uint16_t analogs_message[8];
+	int16_t encoders_messsage[2];
 } controller_variables;
 controller_variables controller;
-
-// Buttons readings variables
-const uint8_t DEBOUNCE_INTERVAL = 5;
-bool MX_latch[4] = {false, false, false, false};
-
-// Variables for battery reading timing
-unsigned long last_batreading = 0;
-const uint8_t BAT_INTERVAL = 100;
-unsigned long last_batchange = 0;
-const uint16_t BATCHANGE_INTERVAL = 5000;
-
-// Flag to update the display
-bool update_display = true;
-
-// Encoders reading variables
-int16_t new_position_left = 0;
-int16_t new_position_right = 0;
-int16_t last_position_left = 0;
-int16_t last_position_right = 0;
-
-// Variables for radio timings
-unsigned long last_message = 0;
-const uint8_t TX_INTERVAL = 2;
-unsigned long last_message_sent = 0;
-const uint16_t TX_TIMEOUT = 5000;
-
-// ********************** Display Icons ***********************
-// My nickname icon
-const unsigned char TURNIP_ICON[] PROGMEM = {
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x07, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfe,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xfe, 0x0f, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xfc, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x1f, 0x00, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x03,
-	0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x03, 0x83, 0x80, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0xc7, 0x83, 0x80, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x60, 0xcf, 0x07, 0x0f, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xde, 0x0f,
-	0x1f, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xfc, 0x1e, 0x7e, 0x1f, 0x80, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xff, 0x1c, 0xf0, 0x07, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0xe1, 0xff, 0x1c, 0xe0, 0x01, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xe0, 0x1d,
-	0xc0, 0x60, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xe0, 0x1f, 0xc1, 0xe0, 0x07, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xc0, 0x1f, 0x83, 0xe0, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0xe3, 0x80, 0x3f, 0x87, 0x8f, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc7, 0x80, 0x78,
-	0x0f, 0xff, 0x83, 0x80, 0x00, 0x00, 0x00, 0x00, 0x03, 0x87, 0x00, 0xf0, 0x1f, 0xff, 0x83, 0x80,
-	0x00, 0x00, 0x00, 0x00, 0x03, 0x8e, 0x01, 0xe0, 0xff, 0xc0, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00,
-	0x03, 0x0e, 0x1f, 0xc3, 0xff, 0x00, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x03, 0x1c, 0x3f, 0xcf,
-	0xff, 0xe0, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x9c, 0x3f, 0xdf, 0x03, 0xf0, 0x7f, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x03, 0x98, 0x38, 0xfc, 0x00, 0x70, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0xf8, 0x70, 0xf8, 0x00, 0x01, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xf9, 0xf3, 0xf0,
-	0x18, 0x07, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe7, 0xf8, 0x7e, 0x0f, 0x80, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0x8f, 0x3f, 0xff, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x7e, 0x1e, 0x1f, 0xef, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x3c, 0x03,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0xe0, 0xe0, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xe0, 0x07,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe1, 0xc0, 0x07, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0xe3, 0x80, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0xe7, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe7, 0x00, 0x7c,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xee, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x03, 0xc0, 0x00, 0xee, 0x07, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0xe0,
-	0x80, 0xfc, 0x3f, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xff, 0xe1, 0xf0, 0xfd, 0xff, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xf0, 0x01, 0xfc, 0x7f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x1f, 0xf8, 0x00, 0x7f, 0xff, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7c, 0x7c, 0x00,
-	0x0f, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x1f, 0x00, 0x03, 0xfc, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x01, 0xe0, 0x07, 0xc0, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0xc0, 0x03, 0xe0, 0x00, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 0x00, 0xe0,
-	0x00, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x07, 0xc0, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x1c, 0x03, 0x80, 0x70, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x1c, 0x3f, 0xf0, 0x7c, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0xff, 0xf8, 0x3e,
-	0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1d, 0xf8, 0x3e, 0x0e, 0x00, 0x00, 0x07, 0x80,
-	0x00, 0x00, 0x00, 0x00, 0x1f, 0xc0, 0x0e, 0x00, 0x00, 0x00, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00,
-	0x1f, 0x80, 0x07, 0x00, 0x00, 0x00, 0x01, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x03, 0x00,
-	0x00, 0x07, 0x01, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x03, 0x80, 0x00, 0x07, 0xc0, 0xe0,
-	0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x03, 0x80, 0x00, 0x03, 0xe0, 0xe0, 0x00, 0x00, 0x00, 0x00,
-	0x0e, 0x04, 0x03, 0x80, 0x00, 0x00, 0xf8, 0x70, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x0f, 0x03, 0x80,
-	0x00, 0x00, 0x7e, 0x70, 0x00, 0x00, 0x00, 0x00, 0x07, 0x07, 0xc3, 0x80, 0x00, 0x00, 0x1f, 0xf0,
-	0x00, 0x00, 0x00, 0x00, 0x07, 0x83, 0xc3, 0x80, 0x00, 0x00, 0x07, 0xf0, 0x00, 0x00, 0x00, 0x00,
-	0x03, 0x80, 0x83, 0x80, 0x00, 0x00, 0x01, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc0, 0x03, 0x80,
-	0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc0, 0x03, 0x80, 0x00, 0x00, 0x00, 0x38,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x03, 0x80, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x70, 0x01, 0x80, 0x01, 0xff, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0xc0,
-	0x0f, 0xff, 0xe0, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x01, 0xc0, 0x3f, 0xff, 0xf8, 0x30,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0xf1, 0xfe, 0x00, 0x7c, 0x70, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x7f, 0xf0, 0x00, 0x1e, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f,
-	0xc0, 0x00, 0x0f, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x03, 0xe0,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 0xe0, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x07, 0x00, 0x00, 0x00, 0x38, 0x01, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00,
-	0x00, 0x3e, 0x01, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 0x00, 0x00, 0x1f, 0x83, 0x80,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 0x00, 0x00, 0x07, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x03, 0x80, 0x00, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x00,
-	0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc0, 0x0f, 0xfc, 0x07, 0xf8, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc1, 0xff, 0xff, 0xff, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x01, 0xcf, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, 0xe0,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 // ********************** Project Configuration ***************
 void setup()
 {
 
 	// Initializes serial communication if macro is enabled
-#ifdef DEBUG
+#if defined(DEBUG_ANALOG) || defined(DEBUG_DIGITAL) || defined(DEBUG_ENCODER) || defined(DEBUG_BATTERY) || defined(DEBUG_GENERIC)
 	Serial.begin(115200);
 #endif
-	Serial.begin(115200);
+
+	for (uint8_t index = 0; index < NUMBER_LEDS; index++)
+	{
+		pinMode(LED_PINS[index], OUTPUT);
+		digitalWrite(LED_PINS[index], LOW);
+	}
 
 	// Initializes and configures the display
 	display.begin(DISPLAY_ADDRESS);
 	display.clearDisplay();
-	display.drawBitmap(18, 18, TURNIP_ICON, 92, 92, SSD1327_WHITE);
 	display.display();
 
 	// Initializes and configures the radio
 	radio.begin();
 	radio.setChannel(radio_CHANNEL);
-	radio.setDataRate(RF24_2MBPS);
+	radio.setDataRate(RF24_250KBPS);
 	radio.setPALevel(RF24_PA_MAX);
 	radio.setPayloadSize(sizeof(controller));
 	radio.openWritingPipe(radio_ADDRESSES[radio_NUMBER]);
@@ -269,281 +208,196 @@ void setup()
 	adc->adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
 
 	// Analog pins configuration
-	pinMode(PIN_JXAL, INPUT_DISABLE);
-	pinMode(PIN_JYAL, INPUT_DISABLE);
-	pinMode(PIN_JXAR, INPUT_DISABLE);
-	pinMode(PIN_JYAR, INPUT_DISABLE);
-	pinMode(PIN_RPOTL, INPUT_DISABLE);
-	pinMode(PIN_SPOTL, INPUT_DISABLE);
-	pinMode(PIN_RPOTR, INPUT_DISABLE);
-	pinMode(PIN_SPOTR, INPUT_DISABLE);
+	for (uint8_t index = 0; index < NUMBER_ANALOG_INS; index++)
+	{
+		pinMode(ANALOG_PINS[index], INPUT_DISABLE);
+	}
+
+	// Battery Voltage Pin Configuration
+	pinMode(BATTERY_PIN, INPUT_DISABLE);
 
 	// Digital pins configuration
-	bounce_MXEL.attach(PIN_MXBTEL, INPUT);
-	bounce_MXCL.attach(PIN_MXBTCL, INPUT);
-	bounce_MXER.attach(PIN_MXBTER, INPUT);
-	bounce_MXCR.attach(PIN_MXBTCR, INPUT);
-	bounce_EBL.attach(PIN_EBTL, INPUT);
-	bounce_JBL.attach(PIN_JBTL, INPUT);
-	bounce_EBR.attach(PIN_EBTR, INPUT);
-	bounce_JBR.attach(PIN_JBTR, INPUT);
-
-	// Debounce configuration
-	bounce_MXCL.interval(DEBOUNCE_INTERVAL);
-	bounce_MXEL.interval(DEBOUNCE_INTERVAL);
-	bounce_MXER.interval(DEBOUNCE_INTERVAL);
-	bounce_MXCR.interval(DEBOUNCE_INTERVAL);
-	bounce_EBL.interval(DEBOUNCE_INTERVAL);
-	bounce_JBL.interval(DEBOUNCE_INTERVAL);
-	bounce_EBR.interval(DEBOUNCE_INTERVAL);
-	bounce_JBR.interval(DEBOUNCE_INTERVAL);
+	for (uint8_t index = 0; index < NUMBER_BUTTONS; index++)
+	{
+		BUTTONS[index].attach(PINS_BUTTONS[index], INPUT);
+		BUTTONS[index].interval(DEBOUNCE_INTERVAL);
+	}
 
 	// DIP Switch pins configuration
-	pinMode(PIN_DIPER, INPUT_PULLUP);
-	pinMode(PIN_DIPCR, INPUT_PULLUP);
-	pinMode(PIN_DIPCL, INPUT_PULLUP);
-	pinMode(PIN_DIPEL, INPUT_PULLUP);
-
-	// LEDs pins configuration
-	pinMode(PIN_LED1, OUTPUT);
-	pinMode(PIN_LED2, OUTPUT);
-	digitalWrite(PIN_LED1, LOW);
-	digitalWrite(PIN_LED2, LOW);
+	for (uint8_t index = 0; index < NUMBER_BUTTONS / 2; index++)
+	{
+		pinMode(DIP_PINS[index], INPUT_PULLUP);
+	}
 
 	// Encoders initial value configuration
-	knob_left.write(last_position_left);
-	knob_right.write(last_position_right);
+	for (uint8_t index = 0; index < NUMBER_KNOBS; index++)
+	{
+		KNBOS[index].write(last_positions[index]);
+	}
 }
 
 // ********************** Project Main Loop ***************
 void loop()
 {
 
-	// Reads controller joysticks axis
-	controller.XLaxis_reading = adc->adc0->analogRead(PIN_JXAL);
-	controller.YLaxis_reading = adc->adc0->analogRead(PIN_JYAL);
-	controller.XRaxis_reading = adc->adc0->analogRead(PIN_JXAR);
-	controller.YRaxis_reading = adc->adc0->analogRead(PIN_JYAR);
+	// ---------------------- Analog Readings --------------------
+	// Reads Controller Battery Voltage
+	if ((millis() - last_battery) > BATTERY_READING)
+	{
+		VD_VOUT = (adc->adc0->analogRead(BATTERY_PIN) * 3.3) / 4095.0;
+		VD_VIN = (VD_VOUT / (VD_R2 / (VD_R1 + VD_R2))) - 0.12;
+		if ((VD_VIN > last_VD_VIN + HYSTERESIS) || (VD_VIN < last_VD_VIN - HYSTERESIS))
+		{
+			analogWrite(LED_PINS[1], map(VD_VIN, MIN_VIN, 7.3, 0, 255));
+			battery_icon = map(VD_VIN, MIN_VIN, 7.3, 0, 4);
+			if (battery_icon != last_battery_icon)
+			{
+				update_display = true;
+				last_battery_icon = battery_icon;
+			}
+			last_VD_VIN = VD_VIN;
+		}
+		last_battery = millis();
+	}
 
-	// Reads controller potentiometers
-	controller.sliderL_reading = adc->adc0->analogRead(PIN_SPOTL);
-	controller.rotaryL_reading = adc->adc0->analogRead(PIN_RPOTL);
-	controller.sliderR_reading = adc->adc0->analogRead(PIN_SPOTR);
-	controller.rotaryR_reading = adc->adc0->analogRead(PIN_RPOTR);
+#ifdef DEBUG_BATTERY
+		Serial.print(VD_VIN);
+		Serial.print(" | ");
+		Serial.print(last_VD_VIN);
+		Serial.print(" | ");
+		Serial.print(battery_icon);
+		Serial.print(" | ");
+		Serial.print(last_battery_icon);
+#endif
+
+	// Reads Controller Analog Inputs
+	for (uint8_t index = 0; index < NUMBER_ANALOG_INS; index++)
+	{
+		analog_readings[index] = adc->adc0->analogRead(ANALOG_PINS[index]);
+		controller.analogs_message[index] = analog_readings[index];
+#ifdef DEBUG_ANALOG
+		Serial.print(analog_readings[index]);
+		Serial.print(" | ");
+#endif
+	}
 
 	// ---------------------- Digital Readings --------------------
 	// Reads DIP Switch pins
-	MX_latch[0] = digitalRead(PIN_DIPEL);
-	MX_latch[1] = digitalRead(PIN_DIPCL);
-	MX_latch[2] = digitalRead(PIN_DIPER);
-	MX_latch[3] = digitalRead(PIN_DIPCR);
-
-	// Reads button from controller
-	bounce_MXEL.update();
-	if (bounce_MXEL.changed())
+	for (uint8_t index = 0; index < NUMBER_BUTTONS / 2; index++)
 	{
-		if (MX_latch[0] == LOW)
-		{
-			if (bounce_MXEL.read() == LOW)
-			{
-				controller.buttonMEL_reading = !controller.buttonMEL_reading;
-			}
-		}
-		else
-		{
-			controller.buttonMEL_reading = bounce_MXEL.read();
-		}
+		MX_latch[index] = digitalRead(DIP_PINS[index]);
+#ifdef DEBUG_DIGITAL
+		Serial.print(MX_latch[index]);
+		Serial.print(" | ");
+#endif
 	}
-
-	// Reads button from controller
-	bounce_MXCL.update();
-	if (bounce_MXCL.changed())
-	{
-		if (MX_latch[1] == LOW)
-		{
-			if (bounce_MXCL.read() == LOW)
-			{
-				controller.buttonMCL_reading = !controller.buttonMCL_reading;
-			}
-		}
-		else
-		{
-			controller.buttonMCL_reading = bounce_MXCL.read();
-		}
-	}
-
-	// Reads button from controller
-	bounce_MXER.update();
-	if (bounce_MXER.changed())
-	{
-		if (MX_latch[2] == LOW)
-		{
-			if (bounce_MXER.read() == LOW)
-			{
-				controller.buttonMER_reading = !controller.buttonMER_reading;
-			}
-		}
-		else
-		{
-			controller.buttonMER_reading = bounce_MXER.read();
-		}
-	}
-
-	// Reads button from controller
-	bounce_MXCR.update();
-	if (bounce_MXCR.changed())
-	{
-		if (MX_latch[3] == LOW)
-		{
-			if (bounce_MXCR.read() == LOW)
-			{
-				controller.buttonMCR_reading = !controller.buttonMCR_reading;
-			}
-		}
-		else
-		{
-			controller.buttonMCR_reading = bounce_MXCR.read();
-		}
-	}
-
-	// Reads button from controller
-	bounce_EBL.update();
-	if (bounce_EBL.changed())
-	{
-		controller.buttonEL_reading = bounce_EBL.read();
-	}
-
-	// Reads button from controller
-	bounce_JBL.update();
-	if (bounce_JBL.changed())
-	{
-		controller.buttonJL_reading = bounce_JBL.read();
-	}
-
-	// Reads button from controller
-	bounce_EBR.update();
-	if (bounce_EBR.changed())
-	{
-		controller.buttonER_reading = bounce_EBR.read();
-	}
-
-	// Reads button from controller
-	bounce_JBR.update();
-	if (bounce_JBR.changed())
-	{
-		controller.buttonJR_reading = bounce_JBR.read();
-	}
-
-	// Reads controller encoder position
-	new_position_left = knob_left.read();
-	if (new_position_left != last_position_left)
-	{
-		if (new_position_left < -180)
-		{
-			new_position_left = -180;
-			knob_left.write(new_position_left);
-		}
-		if (new_position_left > 180)
-		{
-			new_position_left = 180;
-			knob_left.write(new_position_left);
-		}
-		controller.encoderL_reading = new_position_left / 2;
-		last_position_left = new_position_left;
-	}
-
-	// Reads controller encoder position
-	new_position_right = knob_right.read();
-	if (new_position_right != last_position_right)
-	{
-		if (new_position_right < -180)
-		{
-			new_position_right = -180;
-			knob_right.write(new_position_right);
-		}
-		if (new_position_right > 180)
-		{
-			new_position_right = 180;
-			knob_right.write(new_position_right);
-		}
-		controller.encoderR_reading = new_position_right / 2;
-		last_position_right = new_position_right;
-	}
-
-	// ---------------------- Serial Debugging --------------------
-#ifdef DEBUG
-	Serial.print("Battery Voltage: ");
-	Serial.print(ADC_voltage);
-	Serial.println(" V");
-
-	Serial.print("Joystick L: X - ");
-	Serial.print(controller.XLaxis_reading);
-	Serial.print(" | Y - ");
-	Serial.println(controller.YLaxis_reading);
-
-	Serial.print("Joystick R: X - ");
-	Serial.print(controller.XRaxis_reading);
-	Serial.print(" | Y - ");
-	Serial.println(controller.YRaxis_reading);
-
-	Serial.print("Potentiometers L: R - ");
-	Serial.print(controller.rotaryL_reading);
-	Serial.print(" | S - ");
-	Serial.println(controller.sliderL_reading);
-
-	Serial.print("Potentiometers R: R - ");
-	Serial.print(controller.rotaryR_reading);
-	Serial.print(" | S - ");
-	Serial.println(controller.sliderR_reading);
-
-	Serial.print("Buttons L: E - ");
-	Serial.print(controller.buttonEL_reading);
-	Serial.print(" | J - ");
-	Serial.println(controller.buttonJL_reading);
-
-	Serial.print("Buttons R: E - ");
-	Serial.print(controller.buttonER_reading);
-	Serial.print(" | J - ");
-	Serial.println(controller.buttonJR_reading);
-
-	Serial.print("Buttons MX L: CL - ");
-	Serial.print(controller.buttonMCL_reading);
-	Serial.print(" | EL - ");
-	Serial.println(controller.buttonMEL_reading);
-
-	Serial.print("Buttons MX R: CR - ");
-	Serial.print(controller.buttonMCR_reading);
-	Serial.print(" | ER - ");
-	Serial.println(controller.buttonMER_reading);
-
-	Serial.print("Encoders: L - ");
-	Serial.print(controller.encoderL_reading);
-	Serial.print(" | R - ");
-	Serial.println(controller.encoderR_reading);
+#ifdef DEBUG_DIGITAL
+	Serial.println("");
 #endif
 
+	// Reads Controller Buttons
+	for (uint8_t index = 0; index < NUMBER_BUTTONS / 2; index++)
+	{
+		BUTTONS[index].update();
+		buttons_readings[index] = BUTTONS[index].read();
+		controller.buttons_message[index] = buttons_readings[index];
+#ifdef DEBUG_DIGITAL
+		Serial.print(buttons_readings[index]);
+		Serial.print(" | ");
+#endif
+	}
+
+	// Reads Controller Cherry MC Buttons
+	for (uint8_t index = NUMBER_BUTTONS / 2; index < NUMBER_BUTTONS; index++)
+	{
+		BUTTONS[index].update();
+		buttons_readings[index] = BUTTONS[index].read();
+		if (MX_latch[index - 4] == LOW)
+		{
+			if (buttons_readings[index] != latch_change[index - 4])
+			{
+				latch_change[index - 4] = buttons_readings[index];
+				if (buttons_readings[index] == LOW)
+				{
+					MXbuttons_states[index - 4] = !MXbuttons_states[index - 4];
+					controller.buttons_message[index] = MXbuttons_states[index - 4];
+				}
+			}
+		}
+		else
+		{
+			buttons_readings[index] = BUTTONS[index].read();
+			controller.buttons_message[index] = buttons_readings[index];
+		}
+#ifdef DEBUG_DIGITAL
+		Serial.print(buttons_readings[index]);
+		Serial.print(" | ");
+#endif
+	}
+
+	// Reads controller encoder position
+	for (uint8_t index = 0; index < NUMBER_KNOBS; index++)
+	{
+		new_positions[index] = -KNBOS[index].read();
+		if (new_positions[index] != last_positions[index])
+		{
+			if (new_positions[index] > 180)
+			{
+				new_positions[index] = 180;
+				KNBOS[index].write(-new_positions[index]);
+			}
+			if (new_positions[index] < -180)
+			{
+				new_positions[index] = -180;
+				KNBOS[index].write(-new_positions[index]);
+			}
+			last_positions[index] = new_positions[index];
+			controller.encoders_messsage[index] = new_positions[index];
+		}
+#ifdef DEBUG_ENCODER
+		Serial.print(new_positions[index]);
+		Serial.print(" | ");
+#endif
+	}
+
 	// ---------------------- Radio Transmission ------------------
-	// Sends the data structure to the receiver
 	if ((millis() - last_message) > TX_INTERVAL)
 	{
-
 		// Sends the data and checks for acknowledgement
 		message_acknowledged = radio.write(&controller, sizeof(controller));
 		if (message_acknowledged)
 		{
-			// Updates and displays progress bars
-			digitalWrite(PIN_LED1, HIGH);
+			signal_state = true;
+			digitalWrite(LED_PINS[0], HIGH);
 			last_message_sent = millis();
 		}
 		else if ((millis() - last_message_sent) > TX_TIMEOUT)
 		{
-			digitalWrite(PIN_LED1, LOW);
+			signal_state = false;
+			update_display = true;
+			digitalWrite(LED_PINS[0], LOW);
 		}
 		if (last_acknowledgement != message_acknowledged)
 		{
+			update_display = true;
 			last_acknowledgement = message_acknowledged;
 		}
 		last_message = millis();
 	}
+
+	// Checks if need to update OLED Display
+	if (update_display)
+	{
+		display.clearDisplay();
+		display.drawBitmap(0, 6, SIGNAL_ICONS[signal_state], SIGNAL_SIZE, SIGNAL_SIZE, SSD1327_WHITE);
+		display.drawBitmap(80, 0, BATTERY_ICONS[battery_icon], BATTERY_SIZE, BATTERY_SIZE, SSD1327_WHITE);
+		display.drawBitmap(19, 32, epd_bitmap_line_icon_for_turnip_vector, 90, 90, SSD1327_WHITE);
+		display.display();
+		update_display = false;
+	}
+
+#if defined(DEBUG_ANALOG) || defined(DEBUG_DIGITAL) || defined(DEBUG_ENCODER) || defined(DEBUG_BATTERY)
+	Serial.println("");
+#endif
 }
 // ************************************************************

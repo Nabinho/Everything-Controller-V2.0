@@ -10,8 +10,10 @@
  * Written by Giovanni de Castro (10/03/2024).
  *************************************************************/
 
-// Redefinition of the SPI speed for faster communication
-#define RF24_SPI_SPEED 16000000
+// Macro to disable or enable serial debugging
+// #define DEBUG_ANALOG
+// #define DEBUG_DIGITAL
+// #define DEBUG_ENCODER
 
 // Libraries
 #include <SPI.h>
@@ -29,24 +31,9 @@ const bool radioNumber = 1;
 // Controller variables structure
 typedef struct
 {
-  bool buttonMCL_reading = true;
-  bool buttonMEL_reading = true;
-  bool buttonMER_reading = true;
-  bool buttonMCR_reading = true;
-  bool buttonEL_reading = true;
-  bool buttonER_reading = true;
-  bool buttonJL_reading = true;
-  bool buttonJR_reading = true;
-  uint16_t XLaxis_reading = 0;
-  uint16_t YLaxis_reading = 0;
-  uint16_t XRaxis_reading = 0;
-  uint16_t YRaxis_reading = 0;
-  uint16_t sliderL_reading = 0;
-  uint16_t sliderR_reading = 0;
-  uint16_t rotaryL_reading = 0;
-  uint16_t rotaryR_reading = 0;
-  int8_t encoderL_reading = 0;
-  int8_t encoderR_reading = 0;
+  bool buttons_message[8];
+  int analogs_message[8];
+  int encoders_messsage[8];
 } controller_variables;
 controller_variables controller;
 
@@ -69,8 +56,8 @@ void setup() {
 
   // Radio configuration
   radio.setChannel(radio_CHANNEL);
-  radio.setDataRate(RF24_2MBPS);
-  radio.setPALevel(RF24_PA_MAX);
+  radio.setDataRate(RF24_250KBPS);
+  radio.setPALevel(RF24_PA_MIN);
   radio.setPayloadSize(sizeof(controller));
   radio.openWritingPipe(radio_ADDRESSES[radioNumber]);
   radio.openReadingPipe(1, radio_ADDRESSES[!radioNumber]);
@@ -81,20 +68,39 @@ void setup() {
 // Repeticao do codigo
 void loop() {
 
-  if ((millis() - last_rx) > RX_INTERVAL) {
-    if (radio.available(&channel)) {
-      bytes = radio.getPayloadSize();
-      radio.read(&controller, bytes);
-      Serial.print(F("Mensagem de "));
-      Serial.print(bytes);
-      Serial.print(F(" bytes recebida no channel "));
-      Serial.print(channel);
-      Serial.print(F(" | esperado : "));
-      Serial.print(sizeof(controller));
-      Serial.print(F(" bytes em : "));
-      Serial.print(millis() - last_message);
-      Serial.println(F(" ms"));
-      last_message = millis();
+  if (radio.available(&channel)) {
+    bytes = radio.getPayloadSize();
+    radio.read(&controller, bytes);
+    Serial.print(F("Mensagem de "));
+    Serial.print(bytes);
+    Serial.print(F(" bytes recebida no channel "));
+    Serial.print(channel);
+    Serial.print(F(" | esperado : "));
+    Serial.print(sizeof(controller));
+    Serial.print(F(" bytes em : "));
+    Serial.print(millis() - last_message);
+    Serial.println(F(" ms"));
+#ifdef DEBUG_ANALOG
+    for (uint8_t index = 0; index < 8; index++) {
+      Serial.print(controller.analogs_message[index]);
+      Serial.print(" | ");
     }
+    Serial.println("");
+#endif
+#ifdef DEBUG_DIGITAL
+    for (uint8_t index = 0; index < 8; index++) {
+      Serial.print(controller.buttons_message[index]);
+      Serial.print(" | ");
+    }
+    Serial.println("");
+#endif
+#ifdef DEBUG_ENCODER
+    for (uint8_t index = 0; index < 2; index++) {
+      Serial.print(controller.encoders_messsage[index]);
+      Serial.print(" | ");
+    }
+    Serial.println("");
+#endif
+    last_message = millis();
   }
 }

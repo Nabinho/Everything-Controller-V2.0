@@ -1,157 +1,212 @@
 /**************************************************************
- * Everything Controller - Ideal Receiver (v1.0)
+ * Everything Controller (v2.0)
  *
- * Base code for the "Ideal Receiver V1.0" to receive data from
- * my "Everything Controler V2.0", and then control outputs,
- * display the data incoming, display the reading from an IMU
- * and display the distance between two coordinates using a GPS.
- * This final function helps with the monitoring of the 
- * communication distance between both ends.
+ * Base code for the "Everything Controller V2.0" to send data to a receiver.
+ * Communication is based on RF24 using the NRF24L01+ module. The controller
+ * sends data from 8 digital buttons, 2 joysticks (2 X-axis and 2 Y-axis),
+ * two sliders, two rotary potentiometers and two rotary encoders.
+ * With this data, it is possible to control anything.
  *
- * Written by Giovanni de Castro (10/08/2024).
+ * Written by Giovanni de Castro (10/03/2024).
  *************************************************************/
 
 // ********************** Project Libraries *******************
 // Arduino framework
 #include <Arduino.h>
 
-// Redefinition from RF24 library for faster communication
-#define RF24_SPI_SPEED 16000000
-
 // NRF24L01 control libraries
 #include <SPI.h>
 #include <RF24.h>
 
-// Button reading library
-#include <Bounce2.h>
-
-// I2C communication library
-#include <Wire.h>
-
-// Display control library
+// SSD1306 control libraries
+#include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// IMU reading library
-#include <SparkFun_BMI270_Arduino_Library.h>
+// BME680 libraries
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME680.h>
 
-// PPM signal output library
+// Servo control library
 #include <PWMServo.h>
+#include <Servo.h>
 
-// GPS encode library
-#include <TinyGPSPlus.h>
+// Button library
+#include <Bounce2.h>
+
+// GPS library
+#include <TinyGPS++.h>
+
+// ********************** Project Macros **********************
+// Macro to disable or enable serial debugging
+// #define DEBUG_ANALOG
+// #define DEBUG_DIGITAL
+// #define DEBUG_ENCODER
+// #define DEBUG_BUTTONS
+// #define DEBUG_AMBIENT
+#define DEBUG_GPS
+
+// PWM output pins configuration
+#define PIN_PWM1 8
+#define PIN_PWM2 7
+#define PIN_PWM3 6
+#define PIN_PWM4 5
+#define PIN_PWM5 4
+#define PIN_PWM6 3
+#define PIN_PWM7 20
+#define PIN_PWM8 21
+
+// PPM output pins configuration
+#define PIN_PPM1 22
+#define PIN_PPM2 23
+
+// Digital output pins configuration
+#define PIN_DOUT1 29
+#define PIN_DOUT2 30
+#define PIN_DOUT3 31
+#define PIN_DOUT4 28
+#define PIN_DOUT5 27
+#define PIN_DOUT6 26
+#define PIN_DOUT7 25
+#define PIN_DOUT8 24
+
+// LED output pins configuration
+#define PIN_LED1 32
+#define PIN_LED2 33
+
+// Buttons pins configuration
+#define PIN_BTN1 14
+#define PIN_BTN2 15
+#define PIN_BTN3 16
+#define PIN_BTN4 17
+
+// NRF24L01 pins definitions
+#define PIN_CE 9
+#define PIN_CSN 10
+
+// SSD1306 display definitions
+#define DISPLAY_WIDTH 128
+#define DISPLAY_HEIGHT 64
+#define DISPLAY_ADDRESS 0x3C
+#define DISPLYA_RESET -1
 
 // ********************** Project Objects *********************
+// NRF24L01 control object
+RF24 radio(PIN_CE, PIN_CSN);
+
+// SSD1306 display control object
+Adafruit_SSD1306 display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, DISPLYA_RESET);
+
+// BME680 control object
+Adafruit_BME680 ambient(&Wire);
+
+// Servo control objects
+PWMServo SERVOS[2];
 
 // The TinyGPSPlus object
 TinyGPSPlus gps;
 
-// Display variables
-const uint8_t DISPLAY_WIDTH = 128;
-const uint8_t DISPLAY_HEIGHT = 64;
-const uint8_t DISPLAY_ADDRESS = 0x3C;
-const int8_t DISPLAY_RESET = -1;
-
-// Display object
-Adafruit_SSD1306 display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, DISPLAY_RESET);
-
-// IMU object
-BMI270 imu;
-
-// I2C address selection
-const uint8_t i2cAddress = BMI2_I2C_PRIM_ADDR; // 0x68
-
-// Radio control object
-RF24 radio(9, 10); // 1st -> CE | 2nd -> CSN
-
 // ********************** Project Variables *******************
-// Radio variables
-const uint8_t radio_CHANNEL = 71;
-const uint8_t radio_ADDRESSES[][6] = {{0xB6, 0xE9, 0x00, 0x7A, 0x43}, {0x10, 0xCA, 0x87, 0x3F, 0xD8}};
-const bool radioNumber = 1;
+// PWM pins definitions
+const uint8_t NUMBER_PWM = 8;
+const uint8_t PWM_PINS[NUMBER_PWM] = {PIN_PWM1, PIN_PWM2, PIN_PWM3, PIN_PWM4, PIN_PWM5, PIN_PWM6, PIN_PWM7, PIN_PWM8};
+uint8_t PWM_OUT[NUMBER_PWM] = {0, 0, 0, 0, 0, 0, 0, 0};
 
-// Controller variables structure
-typedef struct
-{
-  bool buttonMCL_reading = true;
-  bool buttonMEL_reading = true;
-  bool buttonMER_reading = true;
-  bool buttonMCR_reading = true;
-  bool buttonEL_reading = true;
-  bool buttonER_reading = true;
-  bool buttonJL_reading = true;
-  bool buttonJR_reading = true;
-  uint16_t XLaxis_reading = 0;
-  uint16_t YLaxis_reading = 0;
-  uint16_t XRaxis_reading = 0;
-  uint16_t YRaxis_reading = 0;
-  uint16_t sliderL_reading = 0;
-  uint16_t sliderR_reading = 0;
-  uint16_t rotaryL_reading = 0;
-  uint16_t rotaryR_reading = 0;
-  int8_t encoderL_reading = 0;
-  int8_t encoderR_reading = 0;
-} controller_variables;
-controller_variables controller;
+// PPM pins definitions
+const uint8_t NUMBER_PPM = 2;
+const uint8_t PPM_PINS[NUMBER_PPM] = {PIN_PPM1, PIN_PPM2};
+uint16_t PPM_OUT[NUMBER_PPM] = {90, 90};
+
+// Digital pins definitions
+const uint8_t NUMBER_DOUTS = 8;
+const uint8_t DOUT_PINS[NUMBER_DOUTS] = {PIN_DOUT1, PIN_DOUT2, PIN_DOUT3, PIN_DOUT4, PIN_DOUT5, PIN_DOUT6, PIN_DOUT7, PIN_DOUT8};
+bool DOUT_OUT[NUMBER_DOUTS] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+// LEDs Pins
+const uint8_t NUMBER_LEDS = 2;
+const uint8_t LED_PINS[NUMBER_LEDS] = {PIN_LED1, PIN_LED2};
+
+// Controller buttons objects
+const uint8_t NUMBER_BUTTONS = 4;
+const uint8_t DEBOUNCE_INTERVAL = 50;
+Bounce BUTTONS[NUMBER_BUTTONS];
+const uint8_t PINS_BUTTONS[NUMBER_BUTTONS] = {PIN_BTN1, PIN_BTN2, PIN_BTN3, PIN_BTN4};
+bool buttons_readings[NUMBER_BUTTONS] = {LOW, LOW, LOW, LOW};
+bool last_buttons_readings[NUMBER_BUTTONS] = {HIGH, HIGH, HIGH, HIGH};
+
+// Radio address and channel
+const uint8_t radio_CHANNEL = 71;
+const uint8_t radio_ADDRESSES[2][6] = {{0xB6, 0xE9, 0x00, 0x7A, 0x43}, {0x10, 0xCA, 0x87, 0x3F, 0xD8}};
+const bool radio_NUMBER = 1;
 
 // Message receiving variables
 uint8_t channel;
 uint8_t bytes;
 unsigned long last_message = 0;
-const int FAILSAFE_INTERVAL = 5000;
-const uint8_t LED_RCV = 32;
+const uint16_t RX_TIMEOUT = 2500; // [ms]
 
-// Display timing variables
-unsigned long last_display = 0;
-const uint8_t DISPLAY_INTERVAL = 10;
+// Variables for display timing
+unsigned long display_time = 0;
+const uint16_t UPDATE_INTERVAL = 25; // [ms]
 
-// Buttons reading pins
-#define BOTAO1 14
-#define BOTAO2 15
-#define BOTAO3 16
-#define BOTAO4 17
-
-// Buttons readings objects
-Bounce botao1 = Bounce();
-Bounce botao2 = Bounce();
-Bounce botao3 = Bounce();
-Bounce botao4 = Bounce();
-
-// Buttons readings variables
-const int DEBOUNCE_INTERVAL = 1000;
-bool display_controller = false;
-bool display_imu = false;
-bool display_distance = false;
-bool enable_output = false;
-
-// Output pins
-const uint8_t PWM1_OUT = 8;
-const uint8_t PWM2_OUT = 7;
-const uint8_t PWM3_OUT = 6;
-const uint8_t PWM4_OUT = 5;
-const uint8_t PWM5_OUT = 4;
-const uint8_t PWM6_OUT = 3;
-const uint8_t PWM7_OUT = 20;
-const uint8_t PWM8_OUT = 21;
-const uint8_t PPM1_OUT = 22;
-const uint8_t PPM2_OUT = 23;
-const uint8_t DIG1_OUT = 29;
-const uint8_t DIG2_OUT = 30;
-const uint8_t DIG3_OUT = 31;
-const uint8_t DIG4_OUT = 28;
-const uint8_t DIG5_OUT = 27;
-const uint8_t DIG6_OUT = 26;
-const uint8_t DIG7_OUT = 25;
-const uint8_t DIG8_OUT = 24;
-const uint8_t LED_OUT = 33;
-
-// PPM output objects
-PWMServo PPM1;
-PWMServo PPM2;
+// Ambient sensor variables
+const float sea_level_pressure = 1013.25; // [hpa]
+float temperature_reading = 0.0;
+float humidity_reading = 0.0;
+float pressure_reading = 0.0;
+float air_quality_reading = 0.0;
+float altitude_reading = 0.0;
+String temperature_str;
+String humidity_str;
+String pressure_str;
+String altitude_str;
+unsigned long ambient_time = 0;
+const uint16_t READING_INTERVAL = 1000; // [ms]
 
 // Distance reference variables
 double reference_lng = 0;
 double reference_lat = 0;
+double new_lng = 0;
+double new_lat = 0;
 float distance = 0;
+bool update_reference = true;
+unsigned long gps_time = 0;
+const uint16_t GPS_INTERVAL = 1000; // [ms]
+
+// Controller variables structure
+typedef struct
+{
+  bool buttons_message[8];
+  uint16_t analogs_message[8];
+  int16_t encoders_messsage[2];
+} controller_variables;
+controller_variables controller;
+enum ANALOG_MESSAGE
+{
+  JOY_XL,
+  JOY_YL,
+  JOY_XR,
+  JOY_YR,
+  ROT_L,
+  ROT_R,
+  SLI_L,
+  SLI_R
+};
+enum BUTTONS_MESSAGE
+{
+  JOY_L,
+  JOY_R,
+  ENC_L,
+  ENC_R,
+  MX_EL,
+  MX_CL,
+  MC_CR,
+  MX_ER
+};
+enum ENCODERS_MESSAGE
+{
+  LEFT,
+  RIGHT
+};
 
 // ********************** Project Functions *******************
 // Display controller button state
@@ -184,375 +239,391 @@ void drawPottentiometerBar(int x, int y, int width, int height, int progress)
 }
 
 // Function to display all controller inputs
-void displayController()
+void display_controller()
 {
   display.clearDisplay();
-
-  drawJoyPosition(22, 22, 22, map(controller.XLaxis_reading, 0, 4095, 2, 42), map(controller.YLaxis_reading, 0, 4095, 2, 42));
-  drawPottentiometerBar(46, 0, 6, 44, map(controller.rotaryL_reading, 0, 4095, 0, 100));
-  drawPottentiometerBar(54, 0, 6, 44, map(controller.sliderL_reading, 0, 4095, 100, 0));
-  drawPottentiometerBar(61, 0, 6, 22, map(controller.encoderL_reading, -90, 90, 0, 100));
-  drawPottentiometerBar(61, 22, 6, 22, map(controller.encoderR_reading, -90, 90, 0, 100));
-  drawPottentiometerBar(68, 0, 6, 44, map(controller.sliderR_reading, 0, 4095, 100, 0));
-  drawPottentiometerBar(76, 0, 6, 44, map(controller.rotaryR_reading, 0, 4095, 0, 100));
-  drawJoyPosition(105, 22, 22, map(controller.XRaxis_reading, 0, 4095, 86, 126), map(controller.YRaxis_reading, 0, 4095, 2, 42));
-
-  drawButtonState(0, 46, 32, 8, !controller.buttonJL_reading);
-  drawButtonState(32, 46, 32, 8, !controller.buttonEL_reading);
-  drawButtonState(64, 46, 32, 8, !controller.buttonER_reading);
-  drawButtonState(96, 46, 32, 8, !controller.buttonJR_reading);
-  drawButtonState(0, 56, 32, 8, !controller.buttonMEL_reading);
-  drawButtonState(32, 56, 32, 8, !controller.buttonMCL_reading);
-  drawButtonState(64, 56, 32, 8, !controller.buttonMCR_reading);
-  drawButtonState(96, 56, 32, 8, !controller.buttonMER_reading);
-
+  drawJoyPosition(22, 22, 22, map(controller.analogs_message[JOY_XL], 0, 4095, 2, 42), map(controller.analogs_message[JOY_YL], 0, 4095, 2, 42));
+  drawPottentiometerBar(46, 0, 6, 44, map(controller.analogs_message[ROT_L], 0, 4095, 0, 100));
+  drawPottentiometerBar(54, 0, 6, 44, map(controller.analogs_message[SLI_L], 0, 4095, 100, 0));
+  drawPottentiometerBar(61, 0, 6, 22, map(controller.encoders_messsage[LEFT], -90, 90, 0, 100));
+  drawPottentiometerBar(61, 22, 6, 22, map(controller.encoders_messsage[RIGHT], -90, 90, 0, 100));
+  drawPottentiometerBar(68, 0, 6, 44, map(controller.analogs_message[SLI_R], 0, 4095, 100, 0));
+  drawPottentiometerBar(76, 0, 6, 44, map(controller.analogs_message[ROT_R], 0, 4095, 0, 100));
+  drawJoyPosition(105, 22, 22, map(controller.analogs_message[JOY_XR], 0, 4095, 86, 126), map(controller.analogs_message[JOY_YR], 0, 4095, 2, 42));
+  drawButtonState(0, 46, 32, 8, !controller.buttons_message[JOY_L]);
+  drawButtonState(32, 46, 32, 8, !controller.buttons_message[ENC_L]);
+  drawButtonState(64, 46, 32, 8, !controller.buttons_message[ENC_R]);
+  drawButtonState(96, 46, 32, 8, !controller.buttons_message[JOY_R]);
+  drawButtonState(0, 56, 32, 8, !controller.buttons_message[MX_EL]);
+  drawButtonState(32, 56, 32, 8, !controller.buttons_message[MX_CL]);
+  drawButtonState(64, 56, 32, 8, !controller.buttons_message[MC_CR]);
+  drawButtonState(96, 56, 32, 8, !controller.buttons_message[MX_ER]);
   display.display();
 }
 
-// Function to display th IMU orientation
-void drawAccelPosition(int x, int y, int radius, int px, int py, bool inverted)
-{
-  display.drawLine(x, (y + radius) - 4, x, (y - radius) + 4, WHITE);
-  display.drawLine((x + radius) - 4, y, (x - radius) + 4, y, WHITE);
-  display.drawRoundRect(x - radius, y - radius, (radius * 2), (radius * 2), 5, WHITE);
-  display.drawCircle(x, y, radius, WHITE);
-  display.drawCircle(px, py, radius / 6, WHITE);
-  if (inverted)
-  {
-    display.fillCircle(px, py, radius / 10, WHITE);
-  }
-}
-
-// Function to read IMU and update the display
-void displayIMU()
+// Function to display ambient readings
+void display_ambient()
 {
   display.clearDisplay();
-
-  imu.getSensorData();
-
-  int posicao_eixoX = map(imu.data.accelX, 1, -1, 2, 62);
-  int posicao_eixoY = map(imu.data.accelY, -1, 1, 34, 94);
-  bool inverted;
-  if (imu.data.accelZ > 0.6)
-  {
-    inverted = true;
-  }
-  else
-  {
-    inverted = false;
-  }
-
-  drawAccelPosition(64, 32, 32, posicao_eixoY, posicao_eixoX, inverted);
-
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("TEM:" + temperature_str);
+  display.setCursor(0, 16);
+  display.print("HUM:" + humidity_str);
+  display.setCursor(0, 32);
+  display.print("PRE:" + pressure_str);
+  display.setCursor(0, 48);
+  display.print("ALT:" + altitude_str);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(110, 4);
+  display.print("*C");
+  display.setCursor(110, 20);
+  display.print("%");
+  display.setCursor(110, 36);
+  display.print("hPa");
+  display.setCursor(110, 52);
+  display.print("m");
   display.display();
 }
 
-// Function to calculate the distance and display it
-void displayDistance()
+// Function to display receiver outputs
+void display_output()
 {
-  while (Serial1.available() > 0)
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  for (uint8_t index = 0; index < NUMBER_PWM; index++)
   {
-    gps.encode(Serial1.read());
-    if (gps.location.isUpdated())
-    {
-      distance = gps.distanceBetween(reference_lat, reference_lng, gps.location.lat(), gps.location.lng());
-      Serial.println(distance);
-
-      display.clearDisplay();
-
-      display.setTextSize(1);
-      display.setTextColor(SSD1306_WHITE);
-      display.setCursor(0, 0);
-      display.println(F("DISTANCE (m):"));
-
-      display.setTextSize(2);
-      display.setTextColor(SSD1306_WHITE);
-      display.setCursor(0, 10);
-      display.println(distance);
-
-      display.display();
-    }
+    display.setCursor(0, index * 8);
+    display.print("PWM" + String(index) + ":" + String(PWM_OUT[index]));
   }
+  for (uint8_t index = 0; index < NUMBER_PWM; index++)
+  {
+    display.setCursor(50, index * 8);
+    display.print("D" + String(index) + ":" + String(DOUT_OUT[index]));
+  }
+  for (uint8_t index = 0; index < NUMBER_PPM; index++)
+  {
+    display.setCursor(80, index * 8);
+    display.print("PPM" + String(index) + ":" + String(PPM_OUT[index]));
+  }
+  display.display();
+}
+
+// Function to display the distance between reference position and new position
+void display_gps()
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("DISTANCE(m):");
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 8);
+  display.print(distance);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 40);
+  display.print("REFERENCE:");
+  display.setCursor(0, 48);
+  display.print("LAT:" + String(reference_lat,2));
+  display.setCursor(0, 56);
+  display.print("LNG:" + String(reference_lng,2));
+  display.display();
+  display.setCursor(64, 40);
+  display.print("POSITION:");
+  display.setCursor(64, 48);
+  display.print("LAT:" + String(new_lat,2));
+  display.setCursor(64, 56);
+  display.print("LNG:" + String(new_lng,2));
+  display.display();
 }
 
 // ********************** Project Configuration ***************
 void setup()
 {
 
-  // Radio initialization
-  Serial.begin(9600);
+  // Initializes serial communication if macro is enabled
+#if defined(DEBUG_ANALOG) || defined(DEBUG_DIGITAL) || defined(DEBUG_ENCODER) || defined(DEBUG_BUTTONS) || defined(DEBUG_AMBIENT) || defined(DEBUG_GPS)
+  Serial.begin(115200);
+#endif
   Serial1.begin(9600);
 
-  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-  if (!display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS))
+  // Initializes and configures the PWM pins
+  for (uint8_t index = 0; index < NUMBER_PWM; index++)
   {
-    Serial.println(F("SSD1306 allocation failed"));
-    while (1)
-    {
-    }
+    pinMode(PWM_PINS[index], OUTPUT);
+    analogWrite(PWM_PINS[index], PWM_OUT[index]);
+  };
+
+  // Initializes and configures the PPM pins
+  for (uint8_t index = 0; index < NUMBER_PPM; index++)
+  {
+    SERVOS[index].attach(PPM_PINS[index]);
+    SERVOS[index].write(PPM_OUT[index]);
   }
+
+  // Initializes and configures the PWM pins
+  for (uint8_t index = 0; index < NUMBER_DOUTS; index++)
+  {
+    pinMode(DOUT_PINS[index], OUTPUT);
+    digitalWrite(DOUT_PINS[index], DOUT_OUT[index]);
+  }
+
+  // Initializes the LEDs
+  for (uint8_t index = 0; index < NUMBER_LEDS; index++)
+  {
+    pinMode(LED_PINS[index], OUTPUT);
+    digitalWrite(LED_PINS[index], LOW);
+  }
+
+  // Digital pins configuration
+  for (uint8_t index = 0; index < NUMBER_BUTTONS; index++)
+  {
+    BUTTONS[index].attach(PINS_BUTTONS[index], INPUT);
+    BUTTONS[index].interval(DEBOUNCE_INTERVAL);
+  }
+
+  // Initializes and configures the display
+  display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS);
   display.clearDisplay();
   display.display();
 
-  // IMU initialization
-  while (imu.beginI2C(i2cAddress) != BMI2_OK)
-  {
-    // Not connected, inform user
-    Serial.println("Error: BMI270 not connected, check wiring and I2C address!");
+  // Initializes the ambient sensor
+  ambient.begin();
+  ambient.setTemperatureOversampling(BME680_OS_8X);
+  ambient.setHumidityOversampling(BME680_OS_2X);
+  ambient.setPressureOversampling(BME680_OS_4X);
+  ambient.setIIRFilterSize(BME680_FILTER_SIZE_3);
+  ambient.setGasHeater(320, 150);
 
-    // Wait a bit to see if connection is established
-    delay(1000);
-  }
-
-  // Output pins initialization
-  pinMode(PWM1_OUT, OUTPUT);
-  pinMode(PWM2_OUT, OUTPUT);
-  pinMode(PWM3_OUT, OUTPUT);
-  pinMode(PWM4_OUT, OUTPUT);
-  pinMode(PWM5_OUT, OUTPUT);
-  pinMode(PWM6_OUT, OUTPUT);
-  pinMode(PWM7_OUT, OUTPUT);
-  pinMode(PWM8_OUT, OUTPUT);
-  analogWrite(PWM1_OUT, 0);
-  analogWrite(PWM2_OUT, 0);
-  analogWrite(PWM3_OUT, 0);
-  analogWrite(PWM4_OUT, 0);
-  analogWrite(PWM5_OUT, 0);
-  analogWrite(PWM6_OUT, 0);
-  analogWrite(PWM7_OUT, 0);
-  analogWrite(PWM8_OUT, 0);
-
-  PPM1.attach(PWM1_OUT);
-  PPM2.attach(PWM2_OUT);
-  PPM1.write(90);
-  PPM2.write(90);
-
-  pinMode(DIG1_OUT, OUTPUT);
-  pinMode(DIG2_OUT, OUTPUT);
-  pinMode(DIG3_OUT, OUTPUT);
-  pinMode(DIG4_OUT, OUTPUT);
-  pinMode(DIG5_OUT, OUTPUT);
-  pinMode(DIG6_OUT, OUTPUT);
-  pinMode(DIG7_OUT, OUTPUT);
-  pinMode(DIG8_OUT, OUTPUT);
-  digitalWrite(DIG1_OUT, LOW);
-  digitalWrite(DIG2_OUT, LOW);
-  digitalWrite(DIG3_OUT, LOW);
-  digitalWrite(DIG4_OUT, LOW);
-  digitalWrite(DIG5_OUT, LOW);
-  digitalWrite(DIG6_OUT, LOW);
-  digitalWrite(DIG7_OUT, LOW);
-  digitalWrite(DIG8_OUT, LOW);
-
-  pinMode(LED_OUT, OUTPUT);
-  digitalWrite(LED_OUT, LOW);
-
-  // Receiver radio initialization
-  if (!radio.begin())
-  {
-    Serial.println(F("Falha na inicializacao do radio"));
-    while (1)
-    {
-    }
-  }
-  Serial.println("Radio inicializado!");
-
-  // Radio configuration
+  // Initializes and configures the radio
+  radio.begin();
   radio.setChannel(radio_CHANNEL);
-  radio.setDataRate(RF24_2MBPS);
-  radio.setPALevel(RF24_PA_MAX);
+  radio.setDataRate(RF24_250KBPS);
+  radio.setPALevel(RF24_PA_MIN);
   radio.setPayloadSize(sizeof(controller));
-  radio.openWritingPipe(radio_ADDRESSES[radioNumber]);
-  radio.openReadingPipe(1, radio_ADDRESSES[!radioNumber]);
+  radio.openWritingPipe(radio_ADDRESSES[radio_NUMBER]);
+  radio.openReadingPipe(1, radio_ADDRESSES[!radio_NUMBER]);
   radio.startListening();
-  pinMode(LED_RCV, OUTPUT);
-  digitalWrite(LED_RCV, LOW);
-
-  // Buttons configurations
-  botao1.attach(BOTAO1, INPUT);
-  botao2.attach(BOTAO2, INPUT);
-  botao3.attach(BOTAO3, INPUT);
-  botao4.attach(BOTAO4, INPUT);
-
-  botao1.interval(DEBOUNCE_INTERVAL);
-  botao2.interval(DEBOUNCE_INTERVAL);
-  botao3.interval(DEBOUNCE_INTERVAL);
-  botao4.interval(DEBOUNCE_INTERVAL);
 }
 
 // ********************** Project Main Loop ***************
 void loop()
 {
 
-  // Checks if radio is in range, and reads it
+  // Reads Receiver Buttons
+  for (uint8_t index = 0; index < NUMBER_BUTTONS; index++)
+  {
+    BUTTONS[index].update();
+    // buttons_readings[index] = BUTTONS[index].read();
+    if (BUTTONS[index].read() != last_buttons_readings[index])
+    {
+      last_buttons_readings[index] = BUTTONS[index].read();
+      if (BUTTONS[index].read() == LOW)
+      {
+        buttons_readings[index] = !buttons_readings[index];
+        display.clearDisplay();
+        display.display();
+      }
+    }
+#ifdef DEBUG_BUTTONS
+    Serial.print(buttons_readings[index]);
+    Serial.print(" | ");
+#endif
+  }
+#ifdef DEBUG_BUTTONS
+  Serial.println("");
+#endif
+
   if (radio.available(&channel))
   {
     bytes = radio.getPayloadSize();
-    digitalWrite(LED_RCV, HIGH);
+    radio.read(&controller, bytes);
+    digitalWrite(LED_PINS[0], HIGH);
+    digitalWrite(LED_PINS[1], HIGH);
+#ifdef DEBUG_ANALOG
+    for (uint8_t index = 0; index < 8; index++)
+    {
+      Serial.print(controller.analogs_message[index]);
+      Serial.print(" | ");
+    }
+    Serial.println("");
+#endif
+#ifdef DEBUG_DIGITAL
+    for (uint8_t index = 0; index < 8; index++)
+    {
+      Serial.print(controller.buttons_message[index]);
+      Serial.print(" | ");
+    }
+    Serial.println("");
+#endif
+#ifdef DEBUG_ENCODER
+    for (uint8_t index = 0; index < 2; index++)
+    {
+      Serial.print(controller.encoders_messsage[index]);
+      Serial.print(" | ");
+    }
+    Serial.println("");
+#endif
     last_message = millis();
   }
-  // Otherwise, enable failsafe to outputs
-  else if ((millis() - last_message) > FAILSAFE_INTERVAL)
+  else if ((millis() - last_message) > RX_TIMEOUT)
   {
-    digitalWrite(LED_RCV, LOW);
-    if (enable_output)
+    digitalWrite(LED_PINS[0], LOW);
+    digitalWrite(LED_PINS[1], LOW);
+    for (uint8_t index = 0; index < NUMBER_PWM; index++)
     {
-      analogWrite(PWM1_OUT, 0);
-      analogWrite(PWM2_OUT, 0);
-      analogWrite(PWM3_OUT, 0);
-      analogWrite(PWM4_OUT, 0);
-      analogWrite(PWM5_OUT, 0);
-      analogWrite(PWM6_OUT, 0);
-      analogWrite(PWM7_OUT, 0);
-      analogWrite(PWM8_OUT, 0);
-      PPM1.write(90);
-      PPM2.write(90);
-      digitalWrite(DIG1_OUT, LOW);
-      digitalWrite(DIG2_OUT, LOW);
-      digitalWrite(DIG3_OUT, LOW);
-      digitalWrite(DIG4_OUT, LOW);
-      digitalWrite(DIG5_OUT, LOW);
-      digitalWrite(DIG6_OUT, LOW);
-      digitalWrite(DIG7_OUT, LOW);
-      digitalWrite(DIG8_OUT, LOW);
+      analogWrite(PWM_PINS[index], 0);
+    }
+    for (uint8_t index = 0; index < NUMBER_PPM; index++)
+    {
+      SERVOS[index].write(90);
+    }
+    for (uint8_t index = 0; index < NUMBER_DOUTS; index++)
+    {
+      digitalWrite(DOUT_PINS[index], 0);
     }
   }
 
-  // Checks if button1 is pressed
-  botao1.update();
-  if (botao1.changed())
+  if (buttons_readings[0])
   {
-    if (botao1.read() == LOW)
+    if (update_reference)
     {
-      display_distance = !display_distance;
-      if (display_controller || display_imu)
+      while (Serial1.available() > 0)
       {
-        display_controller = false;
-        display_imu = false;
+        gps.encode(Serial1.read());
+        reference_lng = gps.location.lng();
+        reference_lat = gps.location.lat();
+#ifdef DEBUG_GPS
+        Serial.print("Ref. Latitude= ");
+        Serial.print(reference_lat, 6);
+        Serial.print("| Ref. Longitude= ");
+        Serial.println(reference_lng, 6);
+#endif
+        update_reference = false;
       }
-      if (display_distance)
-      {
-        while (Serial1.available() > 0)
-        {
-          gps.encode(Serial1.read());
-          reference_lng = gps.location.lng();
-          reference_lat = gps.location.lat();
-          Serial.print("Latitude= ");
-          Serial.print(reference_lat, 6);
-          Serial.print(" Longitude= ");
-          Serial.println(reference_lng, 6);
-        }
-      }
-    }
-  }
-
-  // Checks if button2 is pressed
-  botao2.update();
-  if (botao2.changed())
-  {
-    if (botao2.read() == LOW)
-    {
-      display_controller = !display_controller;
-      if (display_distance || display_imu)
-      {
-        display_distance = false;
-        display_imu = false;
-      }
-    }
-  }
-
-  // Checks if button3 is pressed
-  botao3.update();
-  if (botao3.changed())
-  {
-    if (botao3.read() == LOW)
-    {
-      display_imu = !display_imu;
-      if (display_distance || display_controller)
-      {
-        display_distance = false;
-        display_controller = false;
-      }
-    }
-  }
-
-  // Checks if button4 is pressed
-  botao4.update();
-  if (botao4.changed())
-  {
-    if (botao4.read() == LOW)
-    {
-      enable_output = !enable_output;
-    }
-  }
-
-  // If output is enabled
-  if (enable_output)
-  {
-    digitalWrite(LED_OUT, HIGH);
-    analogWrite(PWM1_OUT, map(controller.XLaxis_reading, 0, 4095, 0, 255));
-    analogWrite(PWM2_OUT, map(controller.YLaxis_reading, 0, 4095, 0, 255));
-    analogWrite(PWM3_OUT, map(controller.XRaxis_reading, 0, 4095, 0, 255));
-    analogWrite(PWM4_OUT, map(controller.YRaxis_reading, 0, 4095, 0, 255));
-    analogWrite(PWM5_OUT, map(controller.rotaryL_reading, 0, 4095, 0, 255));
-    analogWrite(PWM6_OUT, map(controller.rotaryR_reading, 0, 4095, 0, 255));
-    analogWrite(PWM7_OUT, map(controller.sliderL_reading, 0, 4095, 0, 255));
-    analogWrite(PWM8_OUT, map(controller.sliderR_reading, 0, 4095, 0, 255));
-    PPM1.write(map(controller.encoderL_reading, -180, 180, 0, 180));
-    PPM2.write(map(controller.encoderR_reading, -180, 180, 0, 180));
-    digitalWrite(DIG1_OUT, !controller.buttonJL_reading);
-    digitalWrite(DIG2_OUT, !controller.buttonJR_reading);
-    digitalWrite(DIG3_OUT, !controller.buttonEL_reading);
-    digitalWrite(DIG4_OUT, !controller.buttonER_reading);
-    digitalWrite(DIG5_OUT, !controller.buttonMEL_reading);
-    digitalWrite(DIG6_OUT, !controller.buttonMCL_reading);
-    digitalWrite(DIG7_OUT, !controller.buttonMER_reading);
-    digitalWrite(DIG8_OUT, !controller.buttonMCR_reading);
-  }
-  else
-  {
-    digitalWrite(LED_OUT, LOW);
-    analogWrite(PWM1_OUT, 0);
-    analogWrite(PWM2_OUT, 0);
-    analogWrite(PWM3_OUT, 0);
-    analogWrite(PWM4_OUT, 0);
-    analogWrite(PWM5_OUT, 0);
-    analogWrite(PWM6_OUT, 0);
-    analogWrite(PWM7_OUT, 0);
-    analogWrite(PWM8_OUT, 0);
-    PPM1.write(90);
-    PPM2.write(90);
-    digitalWrite(DIG1_OUT, LOW);
-    digitalWrite(DIG2_OUT, LOW);
-    digitalWrite(DIG3_OUT, LOW);
-    digitalWrite(DIG4_OUT, LOW);
-    digitalWrite(DIG5_OUT, LOW);
-    digitalWrite(DIG6_OUT, LOW);
-    digitalWrite(DIG7_OUT, LOW);
-    digitalWrite(DIG8_OUT, LOW);
-  }
-
-  // If display exibition is enabled
-  if ((millis() - last_display) > DISPLAY_INTERVAL)
-  {
-    if (display_controller)
-    {
-      displayController();
-    }
-    else if (display_imu)
-    {
-      displayIMU();
-    }
-    else if (display_distance)
-    {
-      displayDistance();
     }
     else
     {
-      display.clearDisplay();
-      display.display();
+      while (Serial1.available() > 0)
+      {
+        gps.encode(Serial1.read());
+        if (gps.location.isUpdated())
+        {
+          new_lng = gps.location.lng();
+          new_lat = gps.location.lat();
+          distance = gps.distanceBetween(reference_lat, reference_lng, new_lat, new_lng);
+#ifdef DEBUG_GPS
+          Serial.print("Ref. Latitude= ");
+          Serial.print(reference_lat, 6);
+          Serial.print(" | Ref. Longitude= ");
+          Serial.print(reference_lng, 6);
+          Serial.print(" | New Latitude= ");
+          Serial.print(reference_lat, 6);
+          Serial.print(" | New Longitude= ");
+          Serial.print(reference_lng, 6);
+          Serial.print(" | Distance= ");
+          Serial.print(distance, 6);
+#endif
+        }
+      }
     }
-    last_display = millis();
+    if ((millis() - gps_time) > GPS_INTERVAL)
+    {
+      display_gps();
+      gps_time = millis();
+    }
+  }
+  else if (buttons_readings[1])
+  {
+    if ((millis() - display_time) > UPDATE_INTERVAL)
+    {
+      display_controller();
+      display_time = millis();
+    }
+  }
+  else if (buttons_readings[2])
+  {
+    if ((millis() - ambient_time) > READING_INTERVAL)
+    {
+
+      // Reads ambient sensor
+      ambient.performReading();
+      temperature_reading = ambient.temperature;
+      humidity_reading = ambient.humidity;
+      pressure_reading = ambient.pressure / 100.00;
+      air_quality_reading = ambient.gas_resistance / 1000.00;
+      altitude_reading = ambient.readAltitude(sea_level_pressure);
+      temperature_str = String(temperature_reading, 1);
+      humidity_str = String(humidity_reading, 1);
+      pressure_str = String(pressure_reading, 1);
+      altitude_str = String(altitude_reading, 1);
+
+#ifdef DEBUG_AMBIENT
+      Serial.print("Temperature = ");
+      Serial.print(temperature_reading);
+      Serial.println(" *C");
+      Serial.print("Pressure = ");
+      Serial.print(pressure_reading);
+      Serial.println(" hPa");
+      Serial.print("Humidity = ");
+      Serial.print(humidity_reading);
+      Serial.println(" %");
+      Serial.print("Air Quality = ");
+      Serial.print(air_quality_reading);
+      Serial.println(" KOhms");
+      Serial.print("Altitude = ");
+      Serial.print(altitude_reading);
+      Serial.println(" m");
+      Serial.println();
+#endif
+
+      // Updates timing
+      ambient_time = millis();
+      display_ambient();
+    }
+  }
+  else if (buttons_readings[3])
+  {
+    for (uint8_t index = 0; index < NUMBER_PWM; index++)
+    {
+      PWM_OUT[index] = map(controller.analogs_message[index], 0, 4095, 0, 254);
+      analogWrite(PWM_PINS[index], PWM_OUT[index]);
+    }
+    for (uint8_t index = 0; index < NUMBER_PPM; index++)
+    {
+      PPM_OUT[index] = map(controller.encoders_messsage[index], -180, 180, 0, 180);
+      SERVOS[index].write(PPM_OUT[index]);
+    }
+    for (uint8_t index = 0; index < NUMBER_DOUTS; index++)
+    {
+      DOUT_OUT[index] = !controller.buttons_message[index];
+      digitalWrite(DOUT_PINS[index], DOUT_OUT[index]);
+    }
+    display_output();
+  }
+  else if (!buttons_readings[0])
+  {
+    update_reference = true;
+  }
+  else if (!buttons_readings[3])
+  {
+    for (uint8_t index = 0; index < NUMBER_PWM; index++)
+    {
+      analogWrite(PWM_PINS[index], 0);
+    }
+    for (uint8_t index = 0; index < NUMBER_PPM; index++)
+    {
+      SERVOS[index].write(90);
+    }
+    for (uint8_t index = 0; index < NUMBER_DOUTS; index++)
+    {
+      digitalWrite(DOUT_PINS[index], 0);
+    }
   }
 }
 // ************************************************************
