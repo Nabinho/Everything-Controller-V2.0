@@ -36,6 +36,10 @@
 // GPS library
 #include <TinyGPS++.h>
 
+// Teensy ADC libraries
+#include <ADC.h>
+#include <ADC_util.h>
+
 // ********************** Project Macros **********************
 // Macro to disable or enable serial debugging
 // #define DEBUG_ANALOG
@@ -43,7 +47,8 @@
 // #define DEBUG_ENCODER
 // #define DEBUG_BUTTONS
 // #define DEBUG_AMBIENT
-#define DEBUG_GPS
+// #define DEBUG_GPS
+// #define DEBUG_BATTERY
 
 // PWM output pins configuration
 #define PIN_PWM1 8
@@ -90,6 +95,9 @@
 #define DISPLYA_RESET -1
 
 // ********************** Project Objects *********************
+// Teensy analog pins object
+ADC *adc = new ADC();
+
 // NRF24L01 control object
 RF24 radio(PIN_CE, PIN_CSN);
 
@@ -171,6 +179,20 @@ float distance = 0;
 bool update_reference = true;
 unsigned long gps_time = 0;
 const uint16_t GPS_INTERVAL = 1000; // [ms]
+
+// Battery Voltage Divider Variables
+const uint8_t BATTERY_PIN = A14;
+float VD_VOUT = 0.0;
+float VD_VIN = 0.0;
+float last_VD_VIN = 0.0;
+const float VD_R1 = 51000.0;
+const float VD_R2 = 33000.0;
+const float MIN_VIN = 6.5;
+const float HYSTERESIS = 0.1;
+unsigned long last_battery = 5000;
+const uint16_t BATTERY_READING = 5000; // [ms]
+uint8_t battery_icon = 4;
+uint8_t last_battery_icon = 0;
 
 // Controller variables structure
 typedef struct
@@ -347,7 +369,7 @@ void setup()
 {
 
   // Initializes serial communication if macro is enabled
-#if defined(DEBUG_ANALOG) || defined(DEBUG_DIGITAL) || defined(DEBUG_ENCODER) || defined(DEBUG_BUTTONS) || defined(DEBUG_AMBIENT) || defined(DEBUG_GPS)
+#if defined(DEBUG_ANALOG) || defined(DEBUG_DIGITAL) || defined(DEBUG_ENCODER) || defined(DEBUG_BUTTONS) || defined(DEBUG_AMBIENT) || defined(DEBUG_GPS) || defined(DEBUG_BATTERY)
   Serial.begin(115200);
 #endif
   Serial1.begin(9600);
@@ -387,6 +409,16 @@ void setup()
     BUTTONS[index].interval(DEBOUNCE_INTERVAL);
   }
 
+  // Configures Teensy ADC0
+	adc->adc0->setReference(ADC_REFERENCE::REF_3V3);
+	adc->adc0->setAveraging(32);
+	adc->adc0->setResolution(12);
+	adc->adc0->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
+	adc->adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
+
+  // Battery Voltage Pin Configuration
+	pinMode(BATTERY_PIN, INPUT_DISABLE);
+
   // Initializes and configures the display
   display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS);
   display.clearDisplay();
@@ -414,6 +446,27 @@ void setup()
 // ********************** Project Main Loop ***************
 void loop()
 {
+
+  // ---------------------- Analog Readings --------------------
+	// Reads Controller Battery Voltage
+	if ((millis() - last_battery) > BATTERY_READING)
+	{
+		VD_VOUT = (adc->adc0->analogRead(BATTERY_PIN) * 3.3) / 4095.0;
+		VD_VIN = (VD_VOUT / (VD_R2 / (VD_R1 + VD_R2))) - 0.12;
+		if ((VD_VIN > last_VD_VIN + HYSTERESIS) || (VD_VIN < last_VD_VIN - HYSTERESIS))
+		{
+			analogWrite(LED_PINS[1], map(VD_VIN, MIN_VIN, 7.3, 0, 255));
+			last_VD_VIN = VD_VIN;
+		}
+		last_battery = millis();
+	}
+
+#ifdef DEBUG_BATTERY
+		Serial.print(VD_VIN);
+		Serial.print(" | ");
+		Serial.print(last_VD_VIN);
+		Serial.println("");
+#endif
 
   // Reads Receiver Buttons
   for (uint8_t index = 0; index < NUMBER_BUTTONS; index++)
@@ -444,7 +497,6 @@ void loop()
     bytes = radio.getPayloadSize();
     radio.read(&controller, bytes);
     digitalWrite(LED_PINS[0], HIGH);
-    digitalWrite(LED_PINS[1], HIGH);
 #ifdef DEBUG_ANALOG
     for (uint8_t index = 0; index < 8; index++)
     {
@@ -474,7 +526,6 @@ void loop()
   else if ((millis() - last_message) > RX_TIMEOUT)
   {
     digitalWrite(LED_PINS[0], LOW);
-    digitalWrite(LED_PINS[1], LOW);
     for (uint8_t index = 0; index < NUMBER_PWM; index++)
     {
       analogWrite(PWM_PINS[index], 0);
