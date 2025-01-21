@@ -249,7 +249,7 @@ void loop()
 		if ((VD_VIN > last_VD_VIN + HYSTERESIS) || (VD_VIN < last_VD_VIN - HYSTERESIS))
 		{
 			analogWrite(LED_PINS[1], map(VD_VIN, MIN_VIN, 7.3, 0, 255));
-			battery_icon = map(VD_VIN, MIN_VIN, 7.3, 0, 4);
+			battery_icon = map(VD_VIN, MIN_VIN, 7.5, 0, 4);
 			if (battery_icon != last_battery_icon)
 			{
 				update_display = true;
