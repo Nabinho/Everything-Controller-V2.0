@@ -27,6 +27,9 @@
 #include <ADC.h>
 #include <ADC_util.h>
 
+// Moving average library
+#include <movingAvg.h>
+
 // Encoder library
 #include <Encoder.h>
 
@@ -38,7 +41,7 @@
 // #define DEBUG_BATTERY
 // #define DEBUG_ANALOG
 // #define DEBUG_DIGITAL
-#define DEBUG_ENCODER
+// #define DEBUG_ENCODER
 // #define DEBUG_GENERIC // used to debug logic without the controller readings
 
 // Controller pins definitions (Analog Inputs)
@@ -107,6 +110,17 @@ bool latch_change[NUMBER_BUTTONS / 2] = {true, true, true, true};
 const uint8_t NUMBER_ANALOG_INS = 8;
 const uint8_t ANALOG_PINS[NUMBER_ANALOG_INS] = {PIN_JXAL, PIN_JYAL, PIN_JXAR, PIN_JYAR, PIN_RPOTL, PIN_RPOTR, PIN_SPOTL, PIN_SPOTR};
 uint16_t analog_readings[NUMBER_ANALOG_INS];
+uint16_t averages_readings[NUMBER_ANALOG_INS];
+const uint8_t NUMBER_SAMPLES = 10;
+movingAvg analog_averages[NUMBER_ANALOG_INS] = {
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES),
+	movingAvg(NUMBER_SAMPLES)};
 
 // LEDs Pins
 const uint8_t NUMBER_LEDS = 2;
@@ -140,12 +154,13 @@ int16_t last_positions[NUMBER_KNOBS] = {0, 0};
 
 // Variables for radio timings
 unsigned long last_message = 0;
-const uint8_t TX_INTERVAL = 2; // [ms] | 1 ms to acknowlegement (6 ms total)
+const uint8_t TX_INTERVAL = 10; // [ms] | 1 ms to acknowlegement (6 ms total)
 unsigned long last_message_sent = 0;
 const uint16_t TX_TIMEOUT = 2500; // [ms] | FAILSAFE
 
 // Battery Voltage Divider Variables
 const uint8_t BATTERY_PIN = A14;
+const uint8_t NUMBER_VREADS = 50;
 float VD_VOUT = 0.0;
 float VD_VIN = 0.0;
 float last_VD_VIN = 0.0;
@@ -157,6 +172,8 @@ unsigned long last_battery = 5000;
 const uint16_t BATTERY_READING = 5000; // [ms]
 uint8_t battery_icon = 4;
 uint8_t last_battery_icon = 0;
+uint16_t average_battery = 0;
+movingAvg battery_readings(NUMBER_VREADS);
 
 // Boolean to update OLED Display
 bool update_display = true;
@@ -211,10 +228,12 @@ void setup()
 	for (uint8_t index = 0; index < NUMBER_ANALOG_INS; index++)
 	{
 		pinMode(ANALOG_PINS[index], INPUT_DISABLE);
+		analog_averages[index].begin();
 	}
 
 	// Battery Voltage Pin Configuration
 	pinMode(BATTERY_PIN, INPUT_DISABLE);
+	battery_readings.begin();
 
 	// Digital pins configuration
 	for (uint8_t index = 0; index < NUMBER_BUTTONS; index++)
@@ -244,7 +263,8 @@ void loop()
 	// Reads Controller Battery Voltage
 	if ((millis() - last_battery) > BATTERY_READING)
 	{
-		VD_VOUT = (adc->adc0->analogRead(BATTERY_PIN) * 3.3) / 4095.0;
+		average_battery = battery_readings.reading(adc->adc0->analogRead(BATTERY_PIN));
+		VD_VOUT = (average_battery * 3.3) / 4095.0;
 		VD_VIN = (VD_VOUT / (VD_R2 / (VD_R1 + VD_R2))) - 0.12;
 		if ((VD_VIN > last_VD_VIN + HYSTERESIS) || (VD_VIN < last_VD_VIN - HYSTERESIS))
 		{
@@ -261,21 +281,23 @@ void loop()
 	}
 
 #ifdef DEBUG_BATTERY
-		Serial.print(VD_VIN);
-		Serial.print(" | ");
-		Serial.print(last_VD_VIN);
-		Serial.print(" | ");
-		Serial.print(battery_icon);
-		Serial.print(" | ");
-		Serial.print(last_battery_icon);
+	Serial.print(VD_VIN);
+	Serial.print(" | ");
+	Serial.print(last_VD_VIN);
+	Serial.print(" | ");
+	Serial.print(battery_icon);
+	Serial.print(" | ");
+	Serial.print(last_battery_icon);
 #endif
 
 	// Reads Controller Analog Inputs
 	for (uint8_t index = 0; index < NUMBER_ANALOG_INS; index++)
 	{
 		analog_readings[index] = adc->adc0->analogRead(ANALOG_PINS[index]);
-		controller.analogs_message[index] = analog_readings[index];
+		averages_readings[index] = analog_averages[index].reading(analog_readings[index]);
+		controller.analogs_message[index] = averages_readings[index];
 #ifdef DEBUG_ANALOG
+		Serial.print(" | ");
 		Serial.print(analog_readings[index]);
 		Serial.print(" | ");
 #endif

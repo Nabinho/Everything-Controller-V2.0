@@ -21,14 +21,14 @@
 #include "RF24.h"
 
 // ESP32 SPI Pins
-const uint8_t MY_MISO = 7;
-const uint8_t MY_MOSI = 6;
-const uint8_t MY_SCLK = 5;
-const uint8_t MY_SS = 4;
+// const uint8_t MY_MISO = 7;
+// const uint8_t MY_MOSI = 6;
+// const uint8_t MY_SCLK = 5;
+// const uint8_t MY_SS = 4;
 
 // Radio control object
-RF24 radio(3, 4);  // 1st -> CE | 2nd -> CSN
-SPIClass *hspi = nullptr;
+RF24 radio(20, 19);  // 1st -> CE | 2nd -> CSN
+// SPIClass *hspi = nullptr;
 
 // Radio variables
 const uint8_t radio_CHANNEL = 71;
@@ -55,12 +55,15 @@ void setup() {
 
   // Radio initialization
   Serial.begin(115200);
-   // SPI bus configuration
-  hspi = new SPIClass(HSPI);
-  hspi->begin(MY_SCLK, MY_MISO, MY_MOSI, MY_SS);
-  if (!radio.begin(hspi)) {
+  // SPI bus configuration
+  // hspi = new SPIClass(HSPI);
+  // hspi->begin(MY_SCLK, MY_MISO, MY_MOSI, MY_SS);
+  if (!radio.begin(/*hspi*/)) {
     Serial.println(F("Falha na inicializacao do radio"));
-    while (1) {}
+    while (1) {
+      Serial.println(F("Falha na inicializacao do radio"));
+      delay(1000);
+    }
   }
   Serial.println("Radio inicializado!");
 
